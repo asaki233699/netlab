@@ -65,12 +65,31 @@ uint8_t ip_prefix_match(uint8_t *ipa, uint8_t *ipb) {
 /**
  * @brief 计算16位校验和
  *
- * @param buf 要计算的数据包
- * @param len 要计算的长度
+ * @param data 要计算的数据（16位对齐）
+ * @param len 要计算的长度（字节数）
  * @return uint16_t 校验和
  */
 uint16_t checksum16(uint16_t *data, size_t len) {
-    // TO-DO
+    uint32_t sum = 0;
+    
+    // 以16位为单位相加（IP头是网络字节序，直接相加）
+    size_t word_count = len / 2;
+    for (size_t i = 0; i < word_count; i++) {
+        sum += swap16(data[i]);  // 转换为主机字节序后相加
+    }
+    
+    // 处理奇数长度（最后一个字节）
+    if (len % 2 != 0) {
+        uint8_t *bytes = (uint8_t *)data;
+        sum += (uint16_t)bytes[len - 1] << 8;
+    }
+    
+    // 折叠进位
+    while (sum >> 16) {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    
+    return ~(uint16_t)sum;
 }
 
 #pragma pack(1)
@@ -93,5 +112,29 @@ typedef struct peso_hdr {
  * @return uint16_t 计算得到的16位校验和
  */
 uint16_t transport_checksum(uint8_t protocol, buf_t *buf, uint8_t *src_ip, uint8_t *dst_ip) {
-    // TO-DO
+    // 增加 UDP 伪头部
+    buf_add_header(buf, sizeof(peso_hdr_t));
+
+    //暂存 IP 头部
+    uint16_t ip_header_backup[sizeof(peso_hdr_t)];
+    memcpy(ip_header_backup,buf->data,sizeof(peso_hdr_t));
+    
+    //填写 UDP 伪头部字段
+    peso_hdr_t *peso_hdr = (peso_hdr_t *)buf->data;
+    memcpy(peso_hdr->src_ip, src_ip, 4);           // 源IP地址
+    memcpy(peso_hdr->dst_ip, dst_ip, 4);           // 目的IP地址
+    peso_hdr->placeholder = 0;                     // 必须置0,用于填充对齐
+    peso_hdr->protocol = protocol;                 // 协议号
+    peso_hdr->total_len16 = swap16(buf->len - sizeof(peso_hdr_t)); // 传输层数据长度
+
+    //计算校验和
+    uint16_t checksum = checksum16((uint16_t *)buf->data,buf->len);
+
+    //恢复ip头部
+    memcpy(buf->data,ip_header_backup,sizeof(peso_hdr_t));
+
+    //去掉udp伪头部
+    buf_remove_header(buf,sizeof(peso_hdr_t));
+
+    return checksum;
 }

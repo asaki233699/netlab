@@ -10,7 +10,23 @@
  * @param src_ip 源ip地址
  */
 static void icmp_resp(buf_t *req_buf, uint8_t *src_ip) {
-    // TO-DO
+    // Step1: 初始化并封装数据
+    buf_t txbuf;
+    buf_init(&txbuf,0);
+
+    buf_copy(&txbuf, req_buf,req_buf->len);
+    icmp_hdr_t *hdr = (icmp_hdr_t *)txbuf.data;
+
+    // 修改类型为回显应答
+    hdr->type = ICMP_TYPE_ECHO_REPLY;
+    hdr->code = 0;
+    hdr->checksum16 = 0;
+
+    // Step2: 填写校验和
+    hdr->checksum16 = checksum16((uint16_t *)txbuf.data,txbuf.len);
+
+    //Step3: 发送数据报
+    ip_out(&txbuf,src_ip,NET_PROTOCOL_ICMP);
 }
 
 /**
@@ -20,7 +36,18 @@ static void icmp_resp(buf_t *req_buf, uint8_t *src_ip) {
  * @param src_ip 源ip地址
  */
 void icmp_in(buf_t *buf, uint8_t *src_ip) {
-    // TO-DO
+    // 报头检测
+    if (buf->len < sizeof(icmp_hdr_t)){
+        return;
+    }
+
+    //查看ICMP类型
+    icmp_hdr_t *hdr = (icmp_hdr_t *)buf->data;
+
+    //回送回显应答
+    if (hdr->type == ICMP_TYPE_ECHO_REQUEST){
+        icmp_resp(buf, src_ip);
+    }
 }
 
 /**
@@ -31,7 +58,43 @@ void icmp_in(buf_t *buf, uint8_t *src_ip) {
  * @param code icmp code，协议不可达或端口不可达
  */
 void icmp_unreachable(buf_t *recv_buf, uint8_t *src_ip, icmp_code_t code) {
-    // TO-DO
+    // 初始化并填写报头
+    buf_t txbuf;
+    buf_init(&txbuf,0);
+
+    // 添加ICMP头部空间
+    if (buf_add_header(&txbuf,sizeof(icmp_hdr_t)) != 0){
+        return;
+    }
+
+    // 填写ICMP头部
+    icmp_hdr_t *hdr = (icmp_hdr_t *)txbuf.data;
+    hdr->type = ICMP_TYPE_UNREACH;
+    hdr->code = code;
+    hdr->checksum16 = 0;
+    hdr->id16 = 0;
+    hdr->seq16 = 0;
+
+    // 填写数据与校验和
+    if (buf_add_header(&txbuf, sizeof(ip_hdr_t) + 8) != 0) {
+        return; // 添加数据失败，直接返回
+    }
+
+    // 复制原始IP数据报的首部
+    memcpy(txbuf.data + sizeof(icmp_hdr_t), recv_buf->data,sizeof(ip_hdr_t));
+
+    // 复制原始IP数据报的前8个字节数据（如果有的话）
+    if (recv_buf->len > sizeof(ip_hdr_t)) {
+        size_t copy_len = (recv_buf->len - sizeof(ip_hdr_t)) > 8 ? 8 : 
+                         (recv_buf->len - sizeof(ip_hdr_t));
+        memcpy(txbuf.data + sizeof(icmp_hdr_t) + sizeof(ip_hdr_t), 
+               recv_buf->data + sizeof(ip_hdr_t), copy_len);
+    }
+
+    hdr->checksum16 = checksum16((uint16_t *)txbuf.data,txbuf.len);
+
+    //发送数据报
+    ip_out(&txbuf,src_ip,NET_PROTOCOL_ICMP);
 }
 
 /**
