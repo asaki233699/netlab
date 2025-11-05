@@ -28,16 +28,17 @@ void udp_in(buf_t *buf, uint8_t *src_ip) {
     }
 
     //重新计算校验和
-    uint16_t received_checksum = hdr->checksum16;
+    uint16_t received_checksum = swap16(hdr->checksum16);  // 转换为主机字节序
     hdr->checksum16 = 0;
     uint16_t new_checksum = transport_checksum(NET_PROTOCOL_UDP,buf,src_ip,net_if_ip);
-    hdr->checksum16 = received_checksum;
+    hdr->checksum16 = swap16(received_checksum);  // 恢复为网络字节序
     if (received_checksum != 0 && new_checksum != received_checksum) {
         return;
     }
 
     // 查询处理函数
     uint16_t dst_port = swap16(hdr->dst_port16);
+    uint16_t src_port = swap16(hdr->src_port16);  // 在移除头部前保存src_port
     udp_handler_t *handler_ptr = (udp_handler_t *)map_get(&udp_table, &dst_port);
 
     //处理未找到处理函数的情况
@@ -53,7 +54,6 @@ void udp_in(buf_t *buf, uint8_t *src_ip) {
     //调用处理函数
     buf_remove_header(buf,sizeof(udp_hdr_t));
 
-    uint16_t src_port = swap16(hdr->src_port16);
     udp_handler_t handler = *handler_ptr;
     handler(buf->data, buf->len, src_ip, src_port);
 }
@@ -67,28 +67,26 @@ void udp_in(buf_t *buf, uint8_t *src_ip) {
  * @param dst_port 目的端口号
  */
 void udp_out(buf_t *buf, uint16_t src_port, uint8_t *dst_ip, uint16_t dst_port) {
-    // 添加 UDP 报头
-    buf_add_header(&buf,sizeof(udp_hdr_t));
-
-    //填充 UDP 首部字段
-    udp_hdr_t *hdr = (udp_hdr_t *)buf->data;
-    hdr->checksum16 = 0;
-    hdr->dst_port16 = swap16(dst_port);
-    hdr->src_port16 = swap16(src_port);
-    hdr->total_len16 = swap16(buf->len);
-
-    uint8_t src_ip[NET_IP_LEN];
-    if (ip_get_addr(src_ip) == 0) { // 假设有获取本地IP的函数
-        hdr->checksum16 = transport_checksum(buf, src_ip, dst_ip, NET_PROTOCOL_UDP);
-    } else {
-        // 如果无法获取本地IP，校验和置为0（表示不使用校验和）
-        hdr->checksum16 = 0;
+    // Step1: 添加UDP报头
+    if (buf_add_header(buf, sizeof(udp_hdr_t)) != 0) {
+        return;
     }
 
-    //计算并填充校验和
-    hdr->checksum16 = transport_checksum(NET_PROTOCOL_UDP,buf,src_ip,dst_ip);
+    // Step2: 填充UDP首部字段
+    udp_hdr_t *hdr = (udp_hdr_t *)buf->data;
+    hdr->src_port16 = swap16(src_port);
+    hdr->dst_port16 = swap16(dst_port);
+    hdr->total_len16 = swap16(buf->len);
+    hdr->checksum16 = 0;  // 先置0，用于校验和计算
 
-    ip_out(buf,dst_ip,NET_PROTOCOL_UDP);
+    // Step3: 计算并填充校验和
+    uint16_t checksum = transport_checksum(NET_PROTOCOL_UDP, buf, net_if_ip, dst_ip);
+    // 重新获取hdr指针，因为transport_checksum可能修改了buf->data
+    hdr = (udp_hdr_t *)buf->data;
+    hdr->checksum16 = swap16(checksum);
+
+    // Step4: 发送UDP数据报
+    ip_out(buf, dst_ip, NET_PROTOCOL_UDP);
 }
 
 /**
